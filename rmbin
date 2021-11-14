@@ -1,0 +1,356 @@
+#!/usr/bin/perl
+#
+# rmbin - A command line trash bin. Sends files and/or directories to a
+#   trash bin (whose name is the current date, YYYY-MM-DD, unless otherwise
+#   specified) within a customizable trash directory.
+#
+# --------------------------- BEGIN LICENSE ---------------------------
+# Copyright 2015 John M. Haynes
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+# 
+# 1. Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+# 
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# 3. Neither the name of the copyright holder nor the names of its contributors
+# may be used to endorse or promote products derived from this software
+# without specific prior written permission.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+# ---------------------------- END LICENSE ----------------------------
+#
+# VERSION HISTORY
+# 2014/08/17  Written by John M. Haynes (https://github.com/johnhcc)
+# 2015/02/01  Fixed issue with spaces in file/directory names (JMH, v1.1)
+# 2015/02/18  Fixed issue with invalid targets (JMH, v1.1.1)
+
+use File::Basename;
+
+# use File::Copy;
+use Getopt::Long;
+use POSIX qw/strftime/;
+use strict;
+
+my $ver = "1.1.1";
+
+# Set trash prefix directory
+
+my $env_RMBIN_DIR = $ENV{"RMBIN_DIR"};
+my $trash_prefix =
+  ( $env_RMBIN_DIR eq "" ) ? $ENV{"HOME"} . "/.rmbin" : $env_RMBIN_DIR;
+$trash_prefix = wts($trash_prefix);    # Make sure there is a trailing / !
+
+# Options
+
+my (
+    $opt_bin,   $opt_empty_all, $opt_empty_bin,
+    $opt_force, $opt_license,   $opt_list_bins,
+    $opt_list,  $opt_quiet,     $opt_help
+);
+my $options_ok = GetOptions(
+    'bin=s'       => \$opt_bin,
+    'empty-all'   => \$opt_empty_all,
+    'empty-bin=s' => \$opt_empty_bin,
+    'force'       => \$opt_force,
+    'license'     => \$opt_license,
+    'list-bins'   => \$opt_list_bins,
+    'list'        => \$opt_list,
+    'l'           => \$opt_list,
+    'quiet'       => \$opt_quiet,
+    'help'        => \$opt_help
+);
+if ( !$options_ok ) { die "For help use: rmbin --help\n" }
+
+if ($opt_help)    { &usage }
+if ($opt_license) { &license }
+
+# --list-bins option: list trash bins then exit
+
+if ($opt_list_bins) {
+    if ( -d $trash_prefix ) {
+        my @files = glob("\"$trash_prefix\"* \"$trash_prefix\".*");
+        if ( scalar @files > 2 ) {
+            foreach (@files) {
+                if (   ( $_ ne $trash_prefix . "." )
+                    && ( $_ ne $trash_prefix . ".." ) )
+                {
+                    my $fnf = ( fileparse($_) )[0];
+                    print "$fnf (at $_)\n";
+                }
+            }
+        }
+    }
+    exit;
+}
+
+# --list option: list full path to all files/directories in all bins
+
+if ($opt_list) {
+    if ( -d $trash_prefix ) {
+        my @files = glob("\"$trash_prefix\"* \"$trash_prefix\".*");
+        if ( scalar @files > 2 ) {
+            foreach (@files) {
+                if (   ( $_ ne $trash_prefix . "." )
+                    && ( $_ ne $trash_prefix . ".." ) )
+                {
+                    my @files2 = glob("\"$_\"/* \"$_\"/.*");
+                    foreach (@files2) {
+                        my $fnf = ( fileparse($_) )[0];
+                        if (   ( $fnf ne "." )
+                            && ( $fnf ne ".." ) )
+                        {
+                            my $itemcode;
+                            if    ( -d $_ ) { $itemcode = "D" }
+                            elsif ( -f $_ ) { $itemcode = "F" }
+                            print $itemcode . " " . $_ . "\n";
+                        }
+                    }
+                }
+            }
+        }
+    }
+    exit;
+}
+
+# --empty-bin option: empty a trash bin(s) then exit
+
+if ($opt_empty_bin) {
+    if ( !-d $trash_prefix ) {
+        qprint( nts($trash_prefix) . " does not exist; nothing to empty\n" );
+    }
+    else {
+        my @bins = split( ',', $opt_empty_bin );
+        foreach (@bins) {
+            my $trash_bin = $trash_prefix . $_ . "/";
+            if ( -d $trash_bin ) {
+                `rm -rf $trash_bin`
+                  and die "Error: Could not remove " . nts($trash_bin) . "\n";
+                qprint( nts($trash_bin) . " successfully emptied\n" );
+            }
+            else {
+                qprint( "Warning: No trash bin found at "
+                      . nts($trash_bin)
+                      . "\n" );
+            }
+        }
+    }
+    exit;
+}
+
+# --empty option
+
+if ($opt_empty_all) {
+    if ( $#ARGV + 1 > 0 ) {
+        die "The --empty-all options requires no arguments; "
+          . "did you mean --empty-bin?\n";
+    }
+    if ( !-d $trash_prefix ) {
+        qprint( nts($trash_prefix) . " does not exist; nothing to empty\n" );
+    }
+    else {
+        if ( !$opt_force ) {
+            print "Are you sure you want to empty all trash bins? (y/n) ";
+            my $inp_do = <STDIN>;
+            chomp $inp_do;
+            if ( uc($inp_do) ne "Y" ) { exit }
+        }
+        `rm -rf $trash_prefix`
+          and die "Error: Could not remove " . nts($trash_prefix) . "\n";
+        qprint( nts($trash_prefix) . " successfully emptied\n" );
+    }
+    exit;
+}
+
+# From hereon, at least one argument is require
+
+if ( $#ARGV + 1 == 0 ) { &usage }
+
+# Create trash prefix directory if needed
+
+if ( !-d $trash_prefix ) {
+    mkdir("$trash_prefix")
+      or die "Error: Could not create " . nts($trash_prefix) . "\n";
+}
+
+# Setup trash bin
+
+my $trash_bin;
+if ($opt_bin) { $trash_bin = wts( $trash_prefix . $opt_bin ) }
+else {
+    $trash_bin =
+        $trash_prefix
+      . strftime( "%Y-%m-%d", localtime )
+      . "/";    # Make sure there is a trailing / !
+}
+
+# Random characters
+
+my @chars = ( '0' .. '9', 'A' .. 'Z' );
+
+foreach (@ARGV) {
+
+    # Invalid targets
+
+    if ( !-e $_ ) { die "Error: $_ does not exist\n"; }
+    if ( !-w $_ ) { die "Error: $_ cannot be moved\n"; }
+    if ( -l $_ )  { die "Error: $_ cannot be a symbolic link\n"; }
+    if ( ( !-f $_ ) && ( !-d $_ ) ) {
+        die "Error: $_ not a regular file or directory\n";
+    }
+
+    # Create trash bin if it doesn't exist
+
+    if ( !-d $trash_bin ) {
+        mkdir("$trash_bin")
+          or die "Error: Could not create " . nts($trash_bin) . "\n";
+    }
+
+    # Ensure trash bin is writeable
+
+    if ( !-w $trash_bin ) {
+        die "Error: Cannot write to " . nts($trash_bin) . "\n";
+    }
+
+    # $fnf is the base name of $_
+
+    my $fnf = ( fileparse( nts($_) ) )[0];
+
+    my $cnt = 1;
+    my $trashed_fullname;
+    do {
+        # Random characters
+
+        my $rs;
+        my $rslen = 10;
+        while ( $rslen-- ) { $rs .= $chars[ rand @chars ] }
+
+        # Destination file/directory name
+
+        my $trashed_name = $rs . "_" . $fnf;
+
+        # Full path to destination file/directory
+
+        $trashed_fullname = $trash_bin . $trashed_name;
+
+        $cnt++;
+    } until ( ( !-e $trashed_fullname ) || ( $cnt > 3 ) );
+
+    # At this point we have tried up to three sets of random characters
+    # to make sure the filename doesn't already exist at the destination.
+    # If it still does, give up.
+
+    if ( -e $trashed_fullname ) {
+        die "Error: $trashed_fullname already exists\n";
+    }
+
+    # Move the file/directory
+
+    qprint("$_ --> $trashed_fullname\n");
+
+    # Avoid File::Copy's move, because it doesn't preserve timestamp
+    # move( $_, $trashed_fullname ) or die("Error: Move failed for $_\n");
+    `mv "$_" "$trashed_fullname"` and die "Error: Move failed for $_\n";
+
+    # Make sure it exists at destination
+
+    if ( !-e $trashed_fullname ) {
+        die("Error: Cannot confirm move success for $_\n");
+    }
+}
+
+sub nts($) {
+
+    # remove any trailing slash
+    my $string = shift;
+    $string =~ s/\/$//;
+    return $string;
+}
+
+sub wts($) {
+
+    # add a trailing slash only if none exists
+    my $string = shift;
+    $string =~ s!/*$!/!;
+    return $string;
+}
+
+sub qprint($) {
+    if ( !$opt_quiet ) { print shift }
+}
+
+sub usage {
+    print <<USAGE;
+Usage: rmbin [OPTIONS] <list>
+
+Sends files and/or directories in <list> to a trash bin (whose name is the
+current date, YYYY-MM-DD, unless otherwise specified) within a customizable
+trash directory.
+
+Options:
+  -b , --bin BIN   Send files to bin named BIN
+  --empty-all      Empty all trash bins and exit
+  --empty-bin BIN  Empty the trash bin named BIN and exit; BIN can also be a
+                   comma-separated list of bins
+  -f , --force     Do not prompt for confirmation
+  -l , --list      List full paths to all files/directories in all trash bins
+                   and exit; first character indicates 'F'ile or 'D'irectory
+  --list-bins      List trash bins and exit
+  -q , --quiet     Quiet mode; suppress most non-error messages
+
+The trash directory is located at ~/.rmbin unless the environmental
+variable RMBIN_DIR is set, in which case that value is used.
+
+Use at your own risk, no warranty; 'rmbin --license' for details
+rmbin version $ver by John M. Haynes (https://github.com/johnhcc)
+USAGE
+    exit;
+}
+
+sub license {
+    print <<LICENSE;
+Copyright 2015 John M. Haynes
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation
+and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+may be used to endorse or promote products derived from this software
+without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+LICENSE
+    exit;
+}
+
